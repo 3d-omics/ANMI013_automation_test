@@ -1,0 +1,241 @@
+# Data quality
+
+```{r load_data_quality}
+load("data/data.Rdata")
+```
+
+## Load statistics
+
+```{r load_sequencing_stats, warning=FALSE, comments="", message=FALSE}
+read_stats <- read_tsv("data/reports/reads_multiqc_general_stats.txt", 
+                        col_types = cols_only("Sample" = col_character(),
+                                              "FastQC_mqc-generalstats-fastqc-total_sequences" = col_double(),
+                                              "FastQC_mqc-generalstats-fastqc-percent_gc" = col_double(),
+                                              "FastQC_mqc-generalstats-fastqc-percent_duplicates" = col_double())) %>%
+  mutate(Sample = str_extract(Sample, "M\\d+")) %>%
+  rename(microsample=Sample,
+         total_sequences="FastQC_mqc-generalstats-fastqc-total_sequences",
+         percent_gc="FastQC_mqc-generalstats-fastqc-percent_gc",
+         percent_dup="FastQC_mqc-generalstats-fastqc-percent_duplicates") %>%
+  group_by(microsample) %>%
+  summarise(total_sequences=sum(total_sequences), percent_unique=100-mean(percent_dup), percent_gc=mean(percent_gc))
+```
+
+```{r load_host_mapping_stats, warning=FALSE, comments="", message=FALSE}
+host_mapping_stats <- read_tsv("data/reports/preprocess_samtools-flagstat-dp_Percentage_of_total.txt") %>%
+    mutate(reference = case_when(
+        grepl("GRCh38", Sample, ignore.case = TRUE) ~ "human",
+        grepl("GRCg7b", Sample, ignore.case = TRUE) ~ "chicken",
+        TRUE ~ NA )) %>%
+    filter(reference=="chicken") %>%
+    mutate(Sample = str_extract(Sample, "M\\d+")) %>%
+    rename(microsample=Sample,reads_mapped_host_percent=`Properly Paired`) %>%
+    select(microsample,reads_mapped_host_percent) %>%
+    group_by(microsample) %>%
+    summarise(reads_mapped_host_percent=mean(reads_mapped_host_percent))
+```
+
+```{r load_human_mapping_stats, warning=FALSE, comments="", message=FALSE}
+human_mapping_stats <- read_tsv("data/reports/preprocess_samtools-flagstat-dp_Percentage_of_total.txt") %>%
+    mutate(reference = case_when(
+        grepl("GRCh38", Sample, ignore.case = TRUE) ~ "human",
+        grepl("GRCg7b", Sample, ignore.case = TRUE) ~ "chicken",
+        TRUE ~ NA )) %>%
+    filter(reference=="human") %>%
+    mutate(Sample = str_extract(Sample, "M\\d+")) %>%
+    rename(microsample=Sample,reads_mapped_human_percent=`Properly Paired`) %>%
+    select(microsample,reads_mapped_human_percent) %>%
+    group_by(microsample) %>%
+    summarise(reads_mapped_human_percent=mean(reads_mapped_human_percent))
+```
+
+```{r load_mag_mapping_stats, warning=FALSE, comments="", message=FALSE}
+quantification_stats  <- read_tsv("data/reports/quantify_multiqc_samtools_stats.txt") %>%
+   filter(str_detect(Sample, "mgg-pbdrep")) %>%
+   mutate(Sample = str_extract(Sample, "M\\d+")) %>%
+   rename(microsample=Sample) %>%
+    group_by(microsample) %>%
+    summarise(reads_mapped=sum(reads_mapped),reads_mapped_percent=mean(reads_mapped_percent))
+```
+
+```{r aggregate_stats, warning=FALSE, comments="", message=FALSE}
+quality_stats <- read_stats %>%
+    left_join(host_mapping_stats, by=join_by(microsample==microsample)) %>%
+    left_join(human_mapping_stats, by=join_by(microsample==microsample)) %>%
+    left_join(quantification_stats, by=join_by(microsample==microsample))
+```
+
+## Individual overview
+
+### Sequencing depth
+
+```{r sequencing_depth, warning=FALSE, comments="", message=FALSE, fig.height=12, fig.width=10, fig.fullwidth=TRUE}
+quality_stats %>%
+    left_join(sample_metadata,by=join_by(microsample==microsample)) %>%
+   mutate(animal=substr(cryosection,1,4)) %>%
+    ggplot(aes(x=total_sequences,y=microsample))+
+      geom_col()+
+      geom_vline(xintercept=10000000, linetype="dashed", color = "red", size=1) + 
+      facet_nested(batch + section + type ~ ., scales="free", space="free", switch = "y") +
+      theme(strip.text.y.left = element_text(angle = 0)) +
+      labs(x="Number of reads", y="Microsamples", fill="Library protocol")
+```
+
+### Sequence duplication
+
+```{r duplicates, warning=FALSE, comments="", message=FALSE, fig.height=12, fig.width=10, fig.fullwidth=TRUE}
+quality_stats %>%
+    left_join(sample_metadata,by=join_by(microsample==microsample)) %>%
+    mutate(animal=substr(cryosection,1,4)) %>%
+    ggplot(aes(x=percent_unique,y=microsample))+
+      geom_col()+
+      geom_vline(xintercept=35, linetype="dashed", color = "red", size=1) + 
+      facet_nested(batch + section + type ~ ., scales="free", space="free", switch = "y") +
+      theme(strip.text.y.left = element_text(angle = 0)) +
+      labs(x="Percentage of non-duplicates", y="Microsamples", fill="Collection success")
+```
+
+### GC %
+
+```{r gc, warning=FALSE, comments="", message=FALSE, fig.height=12, fig.width=10, fig.fullwidth=TRUE}
+quality_stats %>%
+    left_join(sample_metadata,by=join_by(microsample==microsample)) %>%
+    filter(section != "Ileum") %>%
+    mutate(animal=substr(cryosection,1,4)) %>%
+    ggplot(aes(x=percent_gc,y=microsample))+
+      geom_col()+
+      geom_vline(xintercept=60, linetype="dashed", color = "red", size=1) + 
+      facet_nested(batch + section + type ~ ., scales="free", space="free", switch = "y") +
+      theme(strip.text.y.left = element_text(angle = 0)) +
+      labs(x="Percentage of GC", y="Microsamples", fill="Library protocol")
+```
+
+### Host %
+
+```{r host_percentage, warning=FALSE, comments="", message=FALSE, fig.height=12, fig.width=10, fig.fullwidth=TRUE}
+quality_stats %>%
+    left_join(sample_metadata,by=join_by(microsample==microsample)) %>%
+    filter(section != "Ileum") %>%
+    mutate(animal=substr(cryosection,1,4)) %>%
+    ggplot(aes(x=reads_mapped_host_percent,y=microsample))+
+      geom_col()+
+      facet_nested(batch + section + type ~ ., scales="free", space="free", switch = "y") +
+      theme(strip.text.y.left = element_text(angle = 0)) +
+      labs(x="Host %", y="Microsamples", fill="Library protocol")
+```
+
+### Human %
+
+```{r human_percentage, warning=FALSE, comments="", message=FALSE, fig.height=12, fig.width=10, fig.fullwidth=TRUE}
+quality_stats %>%
+    left_join(sample_metadata,by=join_by(microsample==microsample)) %>%
+    mutate(animal=substr(cryosection,1,4)) %>%
+    ggplot(aes(x=reads_mapped_human_percent,y=microsample))+
+      geom_col()+
+      geom_vline(xintercept=5, linetype="dashed", color = "red", size=1) + 
+      facet_nested(batch + section + type ~ ., scales="free", space="free", switch = "y") +
+      theme(strip.text.y.left = element_text(angle = 0)) +
+      labs(x="Human %", y="Microsamples", fill="Library protocol")
+```
+
+### Bacteria mapping %
+
+```{r bacteria_mapped, warning=FALSE, comments="", message=FALSE, fig.height=12, fig.width=10, fig.fullwidth=TRUE}
+quality_stats %>%
+    left_join(sample_metadata,by="microsample") %>%
+    mutate(animal=substr(cryosection,1,4)) %>%
+    ggplot(aes(x=reads_mapped_percent,y=microsample))+
+      geom_col()+
+      geom_vline(xintercept=75, linetype="dashed", color = "red", size=1) + 
+      facet_nested(animal + type ~ ., scales="free", space="free", switch = "y") +
+      theme(strip.text.y.left = element_text(angle = 0)) +
+      labs(x="Mapped to MAGs (%)", y="Microsamples", fill="Library protocol")
+```
+
+### Domain-adjusted mapping rate
+
+## Biplots
+
+### Sequencing depth vs. GC %
+
+```{r sequencing_depth_vs_gc, warning=FALSE, comments="", message=FALSE, fig.height=6, fig.width=10, fig.fullwidth=TRUE}
+quality_stats %>%
+    left_join(sample_metadata,by=join_by(microsample==microsample)) %>%
+    filter(section != "Ileum") %>%
+    filter(type == "Positive") %>%
+    mutate(animal=substr(cryosection,1,4)) %>%
+    ggplot(aes(x=percent_gc,y=total_sequences))+
+      geom_point()+
+      facet_nested(. ~ batch, scales="free") +
+      labs(color="Sexrion")
+```
+
+### Unique sequences vs. GC %
+
+```{r duplicates_vs_gc, warning=FALSE, comments="", message=FALSE, fig.height=6, fig.width=10, fig.fullwidth=TRUE}
+quality_stats %>%
+    left_join(sample_metadata,by=join_by(microsample==microsample)) %>%
+    filter(section != "Ileum") %>%
+    filter(type == "Positive") %>%
+    mutate(animal=substr(cryosection,1,4)) %>%
+    ggplot(aes(x=percent_gc,y=percent_unique))+
+      geom_point()+
+      facet_nested(. ~ batch, scales="free")+
+      labs(color="Library protocol")
+```
+
+## Quality flagging
+
+```{r quality_flags, warning=FALSE, comments="", message=FALSE}
+quality <- quality_stats %>%
+    mutate(depth = case_when(
+        total_sequences <= 10000000 ~ 0,
+        total_sequences > 10000000 ~ 1,
+        TRUE ~ NA)) %>%
+    mutate(duplicates = case_when(
+        percent_unique <= 35 ~ 0,
+        percent_unique > 35 ~ 1,
+        TRUE ~ NA)) %>%
+    mutate(gc = case_when(
+        percent_gc >= 60 ~ 0,
+        percent_gc < 60 ~ 1,
+        TRUE ~ NA)) %>%
+    mutate(human = case_when(
+        reads_mapped_human_percent >= 5 ~ 0,
+        reads_mapped_human_percent < 5 ~ 1,
+        TRUE ~ NA)) %>%
+    mutate(bacteria = case_when(
+        reads_mapped_percent <= 75 ~ 0,
+        reads_mapped_percent > 75 ~ 1,
+        TRUE ~ NA)) %>%
+    select(microsample, depth, duplicates, gc, human, bacteria) %>%
+    mutate(quality = depth + duplicates + gc + human + bacteria) %>%
+    select(microsample, quality)
+
+quality %>% write_tsv("results/quality.tsv")
+```
+
+### Quality overview
+
+```{r quality_plot, warning=FALSE, comments="", message=FALSE, fig.height=12, fig.width=10, fig.fullwidth=TRUE}
+quality %>%
+    left_join(sample_metadata,by=join_by(microsample==microsample)) %>%
+    filter(section != "Ileum") %>%
+    mutate(animal=substr(cryosection,1,4)) %>%
+    ggplot(aes(x=quality,y=microsample))+
+      geom_col()+
+      geom_vline(xintercept=5, linetype="dashed", color = "red", size=1) + 
+      facet_nested(batch + section + type ~ ., scales="free", space="free", switch = "y") +
+      theme(strip.text.y.left = element_text(angle = 0)) +
+      labs(x="Quality score", y="Microsamples", fill="Microsample area")
+```
+
+```{r quality_overview, warning=FALSE, comments="", message=FALSE, fig.height=8, fig.width=10, fig.fullwidth=TRUE}
+quality %>%
+    left_join(sample_metadata,by=join_by(microsample==microsample)) %>%
+    filter(section != "Ileum") %>%
+    filter(type == "Positive") %>%
+    group_by(section) %>%
+    summarise(average=mean(quality, na.rm=TRUE), percentage_5 = mean(quality == 5, na.rm = TRUE) * 100) %>%
+    tt()
+```
